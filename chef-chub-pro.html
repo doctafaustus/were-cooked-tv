@@ -71,6 +71,7 @@ body.bg-green .hint { color: #222; text-shadow: none; }
     <button id="play">Play</button>
     <button id="mic" aria-pressed="false">Mic</button>
     <button id="test" aria-pressed="false" title="Fake babble so you can see the mouth without audio">Test talk</button>
+    <button id="ziggy" aria-pressed="false" title="Plays this video's voiceover with its pre-baked mouth track (works straight from the file, no upload)">Speak voice</button>
   </div>
   <span class="sep"></span>
   <div class="group">
@@ -97,6 +98,16 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   </div>
 </div>
 
+<script>
+  // which video to load: ?video=<folder under videos/> (its voice, mouth track and cue sheet;
+  // local.js holds this machine's paths and is git-ignored)
+  (function () {
+    const v = new URLSearchParams(location.search).get("video") || "crispy-cranberry-chicken";
+    if (!/^[a-z0-9-]+$/.test(v)) throw new Error("video names are lowercase-with-dashes: " + v);
+    window.CHUB_DIR = "videos/" + v + "/";
+    ["video.js", "local.js", "lipsync.js"].forEach(f => document.write('<script src="' + window.CHUB_DIR + f + '"><\/script>'));
+  })();
+</script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
 <script>
@@ -1275,25 +1286,87 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   const lipR = [[0, -0.24], [0.045, -0.276], [0.115, -0.283], [0.17, -0.245]];
   stroke(head, lipL, R * 0.9);
   stroke(head, lipR, R * 0.9);
+  /* The open mouth is a shape rebuilt every frame from five controls (0..1):
+       open   - jaw drop                      wide  - spread ("ee") vs narrow
+       round  - pucker ("oo"/"oh"): narrower, the top lifts into an O
+       teeth  - upper teeth showing ("s", "f", "ee")
+       tongue - tongue raised toward the teeth ("l", "th", open "ah")
+     Each part is a triangle fan over the same outline, clipped to the region it belongs in. */
   const mouth = new THREE.Group();
+  const MK = 20;                                     // samples per edge
+  function fanMesh(color, z, factor) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array((2 * MK + 1) * 3), 3));
+    const idx = [];
+    for (let i = 1; i <= 2 * MK; i++) idx.push(0, i, i === 2 * MK ? 1 : i + 1);
+    g.setIndex(idx);
+    const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color, polygonOffset: true, polygonOffsetFactor: factor, side: THREE.DoubleSide }));
+    m.position.z = z;
+    m.frustumCulled = false;
+    return m;
+  }
   {
-    const { p, n } = onHead(0, -0.272, 0.006);
+    // sits a little proud of the face: it's flat and the muzzle curves forward under it,
+    // which otherwise swallows the bottom of the dark outline
+    const { p, n } = onHead(0, -0.272, 0.018);
     mouth.position.copy(p);
     mouth.quaternion.setFromUnitVectors(Z, n);
-    const half = new THREE.CircleGeometry(1, 40, Math.PI, Math.PI);        // lower half-disc
-    const rim = new THREE.Mesh(half, new THREE.MeshBasicMaterial({ color: INK, polygonOffset: true, polygonOffsetFactor: -3 }));
-    rim.scale.set(1.12, 1.12, 1);
-    const inside = new THREE.Mesh(half, new THREE.MeshBasicMaterial({ color: 0x6b1f2c, polygonOffset: true, polygonOffsetFactor: -4 }));
-    inside.position.z = 0.002;
-    const tongue = new THREE.Mesh(new THREE.CircleGeometry(1, 32), new THREE.MeshBasicMaterial({ color: 0xf28a9c, polygonOffset: true, polygonOffsetFactor: -5 }));
-    tongue.position.set(0, -0.72, 0.004);
-    tongue.scale.set(0.62, 0.4, 1);
-    inside.add(tongue);
-    mouth.add(rim, inside);
-    mouth.userData = { tongue };
+    const rim = fanMesh(INK, 0, -3);
+    const inside = fanMesh(0x6b1f2c, 0.002, -4);
+    const tongue = fanMesh(0xf28a9c, 0.004, -5);
+    const teeth = fanMesh(0xfff6ee, 0.005, -6);
+    mouth.add(rim, inside, tongue, teeth);
+    mouth.userData = { rim, inside, tongue, teeth, cur: { open: 0, wide: 0.5, round: 0, teeth: 0, tongue: 0 } };
     head.add(mouth);
   }
-  mouth.scale.set(0.13, 0.001, 1);
+  mouth.scale.set(0.13, 0.13, 1);
+  // write one outline into a fan: top edge left->right, bottom edge right->left, centre at [0]
+  function writeFan(mesh, w, top, bot) {
+    const a = mesh.geometry.attributes.position.array;
+    let cx = 0, cy = 0, k = 3;
+    const wb = arguments.length > 4 ? arguments[4] : w;      // bottom edge can be narrower/wider than the top
+    for (let i = 0; i < MK; i++) {
+      const x = -w + (2 * w * i) / (MK - 1);
+      a[k++] = x; a[k++] = top(x); a[k++] = 0;
+    }
+    for (let i = 0; i < MK; i++) {
+      const x = wb - (2 * wb * i) / (MK - 1);
+      a[k++] = x; a[k++] = bot(x); a[k++] = 0;
+    }
+    for (let i = 1; i <= 2 * MK; i++) { cx += a[i * 3]; cy += a[i * 3 + 1]; }
+    a[0] = cx / (2 * MK); a[1] = cy / (2 * MK); a[2] = 0;
+    mesh.geometry.attributes.position.needsUpdate = true;
+  }
+  /* His own "w" stays the top of the mouth: the opening hangs from the two low points of
+     the w (x = ±0.115, y = -0.283 on the face) and its top edge follows the w's inner arcs
+     up to the nose line, tucked just under the ink stroke. Only the jaw (bottom edge) moves.
+     Local units: 1 = 0.13 of the face, origin at y = -0.272. */
+  const W_CUSP = 0.885, W_Y = -0.085, W_PEAK = 0.331, TUCK = 0.06, LINE = 0.138;   // LINE = w stroke radius
+  const wTop = x => W_Y - TUCK + W_PEAK * Math.pow(Math.max(0, 1 - Math.abs(x) / W_CUSP), 4);
+  function setMouth(s) {
+    const u = mouth.userData;
+    u.teeth.visible = false;                                    // a cartoon cat: no row of human teeth
+    const h = 1.2 * s.open;                                     // jaw drop below the w
+    if (h < 0.03) { mouth.visible = false; return; }
+    mouth.visible = true;
+    // the jaw: wider and flatter for "ee", narrower and rounder for "oo"/"oh"
+    const wb = W_CUSP * (0.9 + 0.22 * s.wide - 0.32 * s.round);
+    const nE = Math.max(1.6, 1.85 + 0.45 * s.wide - 0.35 * s.round);   // ~2 = a soft rounded U, never boxy
+    const jaw = (x, w, d) => W_Y - TUCK - d * Math.pow(Math.max(0, 1 - Math.pow(Math.min(1, Math.abs(x) / w), nE)), 1 / nE);
+    const bot = x => jaw(x, wb, h);
+    writeFan(u.inside, W_CUSP, wTop, bot, wb);
+    // outline as thick as his other ink lines, around the jaw only (the w is the top line)
+    writeFan(u.rim, W_CUSP + 0.1, wTop, x => jaw(x, wb + LINE * 1.15, h + LINE * 1.55), wb + LINE * 1.15);
+    // tongue: a pink dome on the floor of the mouth, bigger on open vowels and "l"/"th"
+    const th = h * (0.32 + 0.38 * s.tongue);
+    u.tongue.visible = h > 0.18;
+    if (u.tongue.visible) {
+      const gw = wb * 0.78;
+      const dome = x => W_Y - TUCK - h + th * Math.max(0, 1 - (x / gw) * (x / gw));
+      writeFan(u.tongue, gw, x => Math.max(bot(x) + 0.015, Math.min(wTop(x) - 0.02, dome(x))), x => bot(x) + 0.015);
+    }
+  }
+  setMouth(mouth.userData.cur);
 
   blush(head, -0.45, -0.17, 0.14);
   blush(head, 0.45, -0.19, 0.14);
@@ -1449,8 +1522,7 @@ body.bg-green .hint { color: #222; text-shadow: none; }
       bodyG.rotation.z += -0.04 * fling;
       const pucker = bell(τ, 0.3, 0.95);
       if (pucker > 0.05) {
-        mouth.visible = true;
-        mouth.scale.set(0.045 + 0.01 * (1 - pucker), 0.07 * pucker, 1);
+        setMouth({ open: 0.32 * pucker, wide: 0, round: 1, teeth: 0, tongue: 0 });
       }
       if (!act.sparked && τ > 0.95) {
         act.sparked = true;
@@ -1576,6 +1648,37 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   });
   const gainIn = document.getElementById("gain"), gateIn = document.getElementById("gate");
 
+  /* The voiceover: plays the video folder's voice mp3 directly (not through Web Audio, which Chrome
+     silences for file:// media) and drives the mouth from a loudness track baked
+     from the same file, looked up at the audio's current time so they stay in sync. */
+  const CFG = window.CHUB_VIDEO || {}, VOICE = CFG.voiceName || "voice";
+  const ZG = { el: new Audio(window.CHUB_DIR + (CFG.voice || "voice.mp3")), env: window.CHUB_LIPSYNC || null };
+  ZG.el.preload = "auto";
+  const zBtn = document.getElementById("ziggy");
+  zBtn.textContent = "Speak " + VOICE;
+  function zSample(key) {
+    const d = ZG.env && ZG.env[key];
+    if (!d || ZG.el.paused) return null;
+    const f = ZG.el.currentTime * ZG.env.fps, i = Math.floor(f);
+    if (i < 0 || i >= d.length - 1) return null;
+    return (d[i] + (d[i + 1] - d[i]) * (f - i)) / 99;
+  }
+  const zLevel = () => zSample("data") || 0;
+  // the baked mouth shape at the current audio time, or null when Ziggy isn't speaking
+  function zShape() {
+    const open = zSample("open");
+    if (open == null) return null;
+    return { open, wide: zSample("wide"), round: zSample("round"), teeth: zSample("teeth"), tongue: zSample("tongue") };
+  }
+  zBtn.addEventListener("click", () => {
+    if (!ZG.env) { showToast("lipsync.js is missing in " + window.CHUB_DIR, 2500); return; }
+    if (ZG.el.paused) { if (ZG.el.ended) ZG.el.currentTime = 0; ZG.el.play().catch(e => showToast("Couldn't play " + window.CHUB_DIR + (CFG.voice || "voice.mp3") + ": " + e.message, 2500)); }
+    else ZG.el.pause();
+  });
+  ZG.el.addEventListener("play", () => { zBtn.textContent = "Pause " + VOICE; zBtn.setAttribute("aria-pressed", "true"); });
+  ZG.el.addEventListener("pause", () => { zBtn.textContent = "Speak " + VOICE; zBtn.setAttribute("aria-pressed", "false"); });
+  ZG.el.addEventListener("ended", () => { ZG.el.currentTime = 0; if (rec) rec.stop(); });
+
   // fake speech: syllables at ~5/s with pauses between "words"
   let babT = 0, babNext = 0, babAmp = 0;
   function babble(dt) {
@@ -1599,6 +1702,7 @@ body.bg-green .hint { color: #222; text-shadow: none; }
       const db = 20 * Math.log10(rms + 1e-6);
       v = THREE.MathUtils.clamp((db + 52) / 34, 0, 1);       // -52 dB .. -18 dB -> 0..1
     }
+    v = Math.max(v, zLevel());
     if (A.test) v = Math.max(v, babble(dt));
     v = Math.min(1, v * +gainIn.value);
     const gate = +gateIn.value;
@@ -1614,15 +1718,22 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   /* ---------- pose ---------- */
   const clock = new THREE.Clock();
   let talkAvg = 0, nod = 0, nodV = 0, lastLvl = 0;
+  const blink = { at: 1.2, t: -1, dbl: false };
   function pose(t, dt) {
     const lvl = readLevel(dt);
     talkAvg += (lvl - talkAvg) * (1 - Math.exp(-dt * 1.5));     // "is he in a sentence" (slow)
     meterFill.style.height = (lvl * 100).toFixed(1) + "%";
 
-    // mouth: height follows loudness, width narrows a touch as it opens (more "o" than "a")
-    const open = Math.pow(lvl, 0.8);
-    mouth.scale.set(0.13 - 0.025 * open + 0.01 * Math.sin(t * 13) * open, Math.max(0.001, 0.17 * open), 1);
-    mouth.visible = open > 0.02;
+    // mouth: Ziggy uses his baked visemes; live audio / mic / test talk fake the shapes from
+    // loudness (wider on quiet syllables, rounder and deeper on loud ones), then everything eases
+    const tgt = zShape() || (() => {
+      const o = Math.pow(lvl, 0.8);
+      return { open: o, wide: 0.62 - 0.2 * o + 0.12 * Math.sin(t * 5.3), round: 0.35 * o * (0.5 + 0.5 * Math.sin(t * 3.1)),
+               teeth: 0.5 * Math.max(0, 0.5 - o), tongue: 0.5 * o };
+    })();
+    const cur = mouth.userData.cur, km = 1 - Math.exp(-dt * 30);
+    for (const key in cur) cur[key] += (tgt[key] - cur[key]) * km;
+    setMouth(cur);
 
     // little nod kicks on syllable onsets (spring), plus idle breathing and sway
     if (lvl - lastLvl > 0.12) nodV -= 2.6 * (lvl - lastLvl);
@@ -1657,11 +1768,20 @@ body.bg-green .hint { color: #222; text-shadow: none; }
     });
     tail.rotation.y = Math.sin(t * 2.2) * 0.25;
 
-    // blink every few seconds (with an occasional double)
-    const cyc = t % 3.7, cyc2 = (t + 1.3) % 11;
-    const b = cyc < 0.13 ? 1 - Math.sin((cyc / 0.13) * Math.PI) * 0.92
-            : cyc2 < 0.13 ? 1 - Math.sin((cyc2 / 0.13) * Math.PI) * 0.92 : 1;
-    eyes.forEach(e => { e.scale.y = Math.max(0.08, b); });
+    // blink at random 2-5.5 s gaps (sometimes a quick double): snap shut, hold, ease open
+    if (blink.t < 0 && t >= blink.at) blink.t = 0;
+    let b = 1;
+    if (blink.t >= 0) {
+      blink.t += dt;
+      const c = blink.t;
+      b = c < 0.05 ? 1 - 0.95 * (c / 0.05) : c < 0.09 ? 0.05 : c < 0.19 ? 0.05 + 0.95 * smo((c - 0.09) / 0.1) : 1;
+      if (c >= 0.19) {
+        blink.t = -1;
+        if (!blink.dbl && Math.random() < 0.22) { blink.dbl = true; blink.at = t + 0.1; }
+        else { blink.dbl = false; blink.at = t + 2 + Math.random() * 3.5; }
+      }
+    }
+    eyes.forEach(e => { e.scale.y = Math.max(0.05, b); });
     runAct(t, dt);
     bodyG.updateMatrixWorld(true);
     blendHullMat.uniforms.uBodyInv.value.copy(bodyG.matrixWorld).invert();
@@ -1750,7 +1870,8 @@ body.bg-green .hint { color: #222; text-shadow: none; }
     recBtn.setAttribute("aria-pressed", "true");
     recBtn.textContent = "Stop";
     if (A.el.src) { A.el.currentTime = 0; A.el.play(); }
-    showToast(A.el.src ? "Recording — stops when the audio ends" : "Recording — press Stop when done", 2200);
+    else if (ZG.env) { ZG.el.currentTime = 0; ZG.el.play(); }    // video only: line the voice mp3 up at frame 0 in the editor
+    showToast(A.el.src || ZG.env ? "Recording — stops when the audio ends" : "Recording — press Stop when done", 2200);
   });
 
   addEventListener("keydown", e => {

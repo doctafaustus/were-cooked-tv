@@ -1,0 +1,15 @@
+# machine-specific paths (see videos/local.example.js)
+videos/*/local.js
+
+# rendered media stays on disk, never in the repo
+*.mp4
+*.mov
+*.webm
+*.wav
+*.drp
+**/frames/
+*overlay frames*/
+
+# python
+__pycache__/
+*.pyc

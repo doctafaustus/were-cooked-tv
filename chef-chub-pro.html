@@ -71,7 +71,7 @@ body.bg-green .hint { color: #222; text-shadow: none; }
     <button id="play">Play</button>
     <button id="mic" aria-pressed="false">Mic</button>
     <button id="test" aria-pressed="false" title="Fake babble so you can see the mouth without audio">Test talk</button>
-    <button id="ziggy" aria-pressed="false" title="Plays ziggy.mp3 with a pre-baked mouth track (works straight from the file, no upload)">Speak Ziggy</button>
+    <button id="ziggy" aria-pressed="false" title="Plays this video's voiceover with its pre-baked mouth track (works straight from the file, no upload)">Speak voice</button>
   </div>
   <span class="sep"></span>
   <div class="group">
@@ -98,7 +98,16 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   </div>
 </div>
 
-<script src="ziggy-lipsync.js"></script>
+<script>
+  // which video to load: ?video=<folder under videos/> (its voice, mouth track and cue sheet;
+  // local.js holds this machine's paths and is git-ignored)
+  (function () {
+    const v = new URLSearchParams(location.search).get("video") || "crispy-cranberry-chicken";
+    if (!/^[a-z0-9-]+$/.test(v)) throw new Error("video names are lowercase-with-dashes: " + v);
+    window.CHUB_DIR = "videos/" + v + "/";
+    ["video.js", "local.js", "lipsync.js"].forEach(f => document.write('<script src="' + window.CHUB_DIR + f + '"><\/script>'));
+  })();
+</script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
 <script>
@@ -1639,12 +1648,14 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   });
   const gainIn = document.getElementById("gain"), gateIn = document.getElementById("gate");
 
-  /* Ziggy voiceover: plays ziggy.mp3 directly (not through Web Audio, which Chrome
+  /* The voiceover: plays the video folder's voice mp3 directly (not through Web Audio, which Chrome
      silences for file:// media) and drives the mouth from a loudness track baked
      from the same file, looked up at the audio's current time so they stay in sync. */
-  const ZG = { el: new Audio("ziggy.mp3"), env: window.ZIGGY_LIPSYNC || null };
+  const CFG = window.CHUB_VIDEO || {}, VOICE = CFG.voiceName || "voice";
+  const ZG = { el: new Audio(window.CHUB_DIR + (CFG.voice || "voice.mp3")), env: window.CHUB_LIPSYNC || null };
   ZG.el.preload = "auto";
   const zBtn = document.getElementById("ziggy");
+  zBtn.textContent = "Speak " + VOICE;
   function zSample(key) {
     const d = ZG.env && ZG.env[key];
     if (!d || ZG.el.paused) return null;
@@ -1660,12 +1671,12 @@ body.bg-green .hint { color: #222; text-shadow: none; }
     return { open, wide: zSample("wide"), round: zSample("round"), teeth: zSample("teeth"), tongue: zSample("tongue") };
   }
   zBtn.addEventListener("click", () => {
-    if (!ZG.env) { showToast("ziggy-lipsync.js is missing next to this page", 2500); return; }
-    if (ZG.el.paused) { if (ZG.el.ended) ZG.el.currentTime = 0; ZG.el.play().catch(e => showToast("Couldn't play ziggy.mp3: " + e.message, 2500)); }
+    if (!ZG.env) { showToast("lipsync.js is missing in " + window.CHUB_DIR, 2500); return; }
+    if (ZG.el.paused) { if (ZG.el.ended) ZG.el.currentTime = 0; ZG.el.play().catch(e => showToast("Couldn't play " + window.CHUB_DIR + (CFG.voice || "voice.mp3") + ": " + e.message, 2500)); }
     else ZG.el.pause();
   });
-  ZG.el.addEventListener("play", () => { zBtn.textContent = "Pause Ziggy"; zBtn.setAttribute("aria-pressed", "true"); });
-  ZG.el.addEventListener("pause", () => { zBtn.textContent = "Speak Ziggy"; zBtn.setAttribute("aria-pressed", "false"); });
+  ZG.el.addEventListener("play", () => { zBtn.textContent = "Pause " + VOICE; zBtn.setAttribute("aria-pressed", "true"); });
+  ZG.el.addEventListener("pause", () => { zBtn.textContent = "Speak " + VOICE; zBtn.setAttribute("aria-pressed", "false"); });
   ZG.el.addEventListener("ended", () => { ZG.el.currentTime = 0; if (rec) rec.stop(); });
 
   // fake speech: syllables at ~5/s with pauses between "words"
@@ -1859,7 +1870,7 @@ body.bg-green .hint { color: #222; text-shadow: none; }
     recBtn.setAttribute("aria-pressed", "true");
     recBtn.textContent = "Stop";
     if (A.el.src) { A.el.currentTime = 0; A.el.play(); }
-    else if (ZG.env) { ZG.el.currentTime = 0; ZG.el.play(); }    // video only: line ziggy.mp3 up at frame 0 in the editor
+    else if (ZG.env) { ZG.el.currentTime = 0; ZG.el.play(); }    // video only: line the voice mp3 up at frame 0 in the editor
     showToast(A.el.src || ZG.env ? "Recording — stops when the audio ends" : "Recording — press Stop when done", 2200);
   });
 

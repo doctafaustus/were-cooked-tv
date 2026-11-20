@@ -1,23 +1,24 @@
-"""Bake a viseme track for ziggy.mp3 -> ziggy-lipsync.js
+"""Bake a video's mouth track: videos/<name>/{voice.mp3, script.txt, words.json} -> lipsync.js
 
-Script words are aligned to Whisper word timings, spelled out into rough
-mouth-shape units, blended over time, and the jaw is scaled by the real
-loudness so it opens wider on stressed syllables.
+    python tools/bake_visemes.py crispy-cranberry-chicken
+
+The script words are lined up with Whisper's word timings (words.json, from whisper_words.py),
+spelled out into rough mouth shapes, blended over time, and the jaw is scaled by the real
+loudness so it opens wider on stressed syllables. Digits Whisper writes ("$40", "10") are mapped
+to spoken words with "whisperNumbers" in video.js.
 """
-import json, re, subprocess, sys, difflib
+import json, os, re, subprocess, sys, difflib
 import numpy as np
 from scipy.signal import butter, sosfilt
 from scipy.ndimage import gaussian_filter1d
 
-AUDIO, WORDS, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
-SCRIPT = ("A forty-dollar restaurant plate? Nope! This is dinner for four for under ten bucks. Quick grocery run: "
-          "chicken leg quarters, two cans of beans, cranberry sauce, a lemon, garlic, and one adorable little shallot. "
-          "Eight eighty-four! Add some pantry staples and we're still under ten. We'll break the leg quarters into thighs "
-          "and drumsticks, because pre-cut chicken costs way more. The drumsticks will roast in the oven while we sear the "
-          "thighs skin-side down until they're gorgeous. Then we'll slather on a sticky cranberry, soy, and brown sugar glaze. "
-          "Shallot and butter make a quick pan sauce, and garlicky white beans get blended silkier than my fur. Puree down, "
-          "chicken on top, a spoonful of sauce, and a little lemon zest, because we're fancy now. Four restaurant plates, "
-          "under ten bucks! Follow for more Bangers on a Budget, and no, you can't have my drumstick.")
+from chub_config import load
+
+CFG = load(sys.argv[1] if len(sys.argv) > 1 else "crispy-cranberry-chicken")
+AUDIO = CFG["voicePath"]
+WORDS = os.path.join(CFG["dir"], "words.json")
+OUT = os.path.join(CFG["dir"], "lipsync.js")
+SCRIPT = open(os.path.join(CFG["dir"], "script.txt"), encoding="utf-8").read().strip()
 FPS = 100
 
 # ---------- loudness (same voice band + dB scale as the live analyser) ----------
@@ -37,9 +38,9 @@ for f in range(N):
 # ---------- align script words to whisper timings ----------
 norm = lambda w: re.sub(r"[^a-z']", "", w.lower())
 script = [t for t in re.findall(r"[A-Za-z']+", SCRIPT.replace('-', ' '))]
-NUM = {'$40': ['forty', 'dollar'], '10': ['ten'], '8e4': ['eight', 'eighty', 'four']}
+NUM = {k.lower(): v for k, v in CFG.get('whisperNumbers', {}).items()}
 wh = []
-for s, e, w in json.load(open(WORDS)):
+for s, e, w in json.load(open(WORDS, encoding='utf-8')):
     k = w.lower().strip('.,?!')
     parts = NUM.get(k) or [p for p in re.findall(r"[a-z']+", k)] or [k]
     step = (e - s) / len(parts)
@@ -139,13 +140,18 @@ C = np.concatenate([C[lead:], np.repeat(C[-1:], lead)])
 Lp = np.clip(L * 1.25, 0, 1) ** 0.85
 jaw = Lp * (0.45 + 0.75 * S[:, 0]) * (1 - 0.75 * np.clip(C * 1.5, 0, 1))
 jaw = np.where(tail, Lp * 0.9, jaw)
+# talk, don't flap: never quite fully open, keep a sliver open inside words (only m/b/p and real
+# pauses close it), and round off the syllable edges
+inw = np.clip(iw * 1.4, 0, 1) * (1 - np.clip(C * 1.5, 0, 1))
+jaw = np.maximum(np.minimum(0.8 * jaw, 0.82), 0.14 * inw * np.clip(L * 4, 0, 1))
+jaw = gaussian_filter1d(jaw, 1.2)
 q = lambda a: [int(round(v)) for v in np.clip(a, 0, 1) * 99]
 out = {'fps': FPS, 'duration': round(len(x) / sr, 3), 'data': q(loud),
        'open': q(jaw), 'wide': q(S[:, 1]), 'round': q(S[:, 2]), 'teeth': q(S[:, 3] * np.clip(iw * 1.4 + Lp, 0, 1)),
        'tongue': q(S[:, 4] * np.clip(jaw * 2, 0, 1))}
-open(OUT, 'w').write("// mouth track for ziggy.mp3, 100 frames/s, values 0-99.\n"
+open(OUT, 'w').write("// mouth track for " + os.path.basename(AUDIO) + ", 100 frames/s, values 0-99. Made by tools/bake_visemes.py.\n"
                      "// data = loudness (meter); open/wide/round/teeth/tongue = baked mouth shapes.\n"
-                     "window.ZIGGY_LIPSYNC = " + json.dumps(out, separators=(',', ':')) + ";\n")
-print('frames', N, 'words', len(script), 'last word ends', round(last_end, 2))
+                     "window.CHUB_LIPSYNC = " + json.dumps(out, separators=(',', ':')) + ";\n")
+print('frames', N, 'words', len(script), 'last word ends', round(last_end, 2), '->', OUT)
 for w, t in list(zip(script, timed))[:6] + list(zip(script, timed))[-4:]:
     print(w, [round(v, 2) for v in t], units(w))

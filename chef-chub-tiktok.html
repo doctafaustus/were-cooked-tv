@@ -72,7 +72,7 @@ body.bg-green .hint { color: #222; text-shadow: none; }
 <body class="bg-clear">
 <div id="frame">
   <!-- preview only: the recording is the cat canvas alone (transparent), 1080x1920, to lay over this video in the editor -->
-  <video id="bgvid" src="file:///C:/Users/Bill/Videos/Crispy%20Cranberry%20Chicken%20TikTok.mp4" muted playsinline preload="auto"></video>
+  <video id="bgvid" muted playsinline preload="auto"></video>
   <canvas id="stage" width="1080" height="1920" aria-label="Chef Chub, a chubby white cartoon cat in a chef hat, who lip-syncs to audio"></canvas>
 </div>
 <div class="hint" id="hint">Drag to turn him · scroll to zoom · H hides the controls · 1 2 3 play actions</div>
@@ -85,7 +85,7 @@ body.bg-green .hint { color: #222; text-shadow: none; }
     <button id="play">Play</button>
     <button id="mic" aria-pressed="false">Mic</button>
     <button id="test" aria-pressed="false" title="Fake babble so you can see the mouth without audio">Test talk</button>
-    <button id="ziggy" aria-pressed="false" title="Plays ziggy.mp3 with a pre-baked mouth track (works straight from the file, no upload)">Speak Ziggy</button>
+    <button id="ziggy" aria-pressed="false" title="Plays this video's voiceover with its pre-baked mouth track (works straight from the file, no upload)">Speak voice</button>
   </div>
   <span class="sep"></span>
   <div class="group">
@@ -100,6 +100,7 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   </div>
   <span class="sep"></span>
   <div class="group">
+    <button id="cuesToggle" aria-pressed="true" title="Follow the video's cues.js: placement, glances and actions on Ziggy's time (turn off to place him by hand)">Cues</button>
     <button id="vidToggle" aria-pressed="true" title="Show/hide the background video (preview only, never recorded)">Video</button>
     <input id="scrub" type="range" min="0" max="57.6" step="0.01" value="0" title="Jump to a moment" style="width:140px">
     <span class="fname" id="tlabel">0:00.0</span>
@@ -120,11 +121,21 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   <span class="sep"></span>
   <div class="group">
     <button id="reset">Reset view</button>
+    <button id="renderBtn" title="Render every frame (exact timing, transparent 1080x1920) to tools/frame_collector.py on this machine">Render frames</button>
     <button id="rec" class="rec" aria-pressed="false" title="Records the canvas + audio to a .webm (transparent if Bg is None)">Record</button>
   </div>
 </div>
 
-<script src="ziggy-lipsync.js"></script>
+<script>
+  // which video to load: ?video=<folder under videos/> (its voice, mouth track and cue sheet;
+  // local.js holds this machine's paths and is git-ignored)
+  (function () {
+    const v = new URLSearchParams(location.search).get("video") || "crispy-cranberry-chicken";
+    if (!/^[a-z0-9-]+$/.test(v)) throw new Error("video names are lowercase-with-dashes: " + v);
+    window.CHUB_DIR = "videos/" + v + "/";
+    ["video.js", "local.js", "lipsync.js", "cues.js"].forEach(f => document.write('<script src="' + window.CHUB_DIR + f + '"><\/script>'));
+  })();
+</script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
 <script>
@@ -733,6 +744,8 @@ body.bg-green .hint { color: #222; text-shadow: none; }
     inner.position.set(0, 0.07, 0.055);
     g.add(inner);
     parent.add(g);
+    g.userData = { side, z0: g.rotation.z };
+    return g;
   }
 
   /* ---------- body: a round, bottom-heavy egg ---------- */
@@ -1154,7 +1167,7 @@ body.bg-green .hint { color: #222; text-shadow: none; }
     side: THREE.BackSide
   }));
   head.add(withOutline(new THREE.Mesh(HEAD_GEO, headMat), headHullMat));
-  ear(head, -1, pawMat, true); ear(head, 1, pawMat, false);   // little chip out of his right ear
+  const ears = [ear(head, -1, pawMat, true), ear(head, 1, pawMat, false)];   // little chip out of his right ear
 
   /* ---------- chef hat ----------
      One smooth lathe: a straight band that swells into a soft mushroom top, with gentle
@@ -1480,9 +1493,10 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   const pawLocal = (a, out) => { bodyG.updateMatrixWorld(true); return bodyG.worldToLocal(a.paw.getWorldPosition(out)); };
   function panSpot(out) { return out.set(0, 0.07, 0.78).applyEuler(panG.rotation).multiplyScalar(panG.scale.x).add(panG.position); }
 
-  const DUR = { wave: 2.8, kiss: 2.1, pan: 3.4, panHat: 4.2 };
-  function startAct(name) {
+  const DUR = { wave: 2.8, kiss: 2.1, pan: 3.4, panHat: 4.2, suspicious: 1.7, surprised: 0.85, shake: 0.75, shrug: 1.2, proud: 1.3, laugh: 1.3, point: 1.4 };
+  function startAct(name, opts) {
     act.name = name; act.τ = 0; act.sparked = false; act.launched = false;
+    act.noSpark = !!(opts && opts.sparkle === false);      // cue sheet: kiss without the sparkle burst
     act.hat = name === "pan" && Math.random() < 0.25;          // sometimes it lands on his hat
     act.dur = name === "pan" ? (act.hat ? DUR.panHat : DUR.pan) : DUR[name];
     panG.visible = cake.visible = false;
@@ -1541,11 +1555,61 @@ body.bg-green .hint { color: #222; text-shadow: none; }
       if (pucker > 0.05) {
         setMouth({ open: 0.32 * pucker, wide: 0, round: 1, teeth: 0, tongue: 0 });
       }
+      if (!act.sparked && τ > 0.95 && act.noSpark) act.sparked = true;
       if (!act.sparked && τ > 0.95) {
         act.sparked = true;
         bodyG.updateMatrixWorld(true);
         burst(R.paw.getWorldPosition(new THREE.Vector3()));
       }
+    }
+
+    // ---- quick character beats used by the cue sheet ----
+    if (act.name === "suspicious") {                             // "A forty-dollar restaurant plate...?"
+      const w = env(τ, dur, 0.2, 0.3);
+      brows[1].position.y += 0.06 * w; brows[1].rotation.z += 0.15 * w;      // one brow up
+      brows[0].position.y -= 0.025 * w; brows[0].rotation.z -= 0.22 * w;     // the other furrowed
+      eyes.forEach(e => { e.scale.y = Math.min(e.scale.y, 1 - 0.4 * w); });  // narrowed
+      head.rotation.z += 0.12 * w; head.rotation.x -= 0.06 * w;
+      bodyG.rotation.z -= 0.04 * w;
+    }
+    if (act.name === "surprised") {                              // "...plate?!"
+      const w = env(τ, dur, 0.08, 0.35);
+      brows.forEach(b => { b.position.y += 0.08 * w; });
+      eyes.forEach(e => { e.scale.y *= 1 + 0.18 * w; e.scale.x = 1 + 0.12 * w; });
+      head.rotation.x -= 0.1 * w;
+      bodyG.position.y += 0.03 * w;
+    }
+    if (act.name === "shake") {                                  // "Nope!" / "no, you can't"
+      const w = env(τ, dur, 0.08, 0.15);
+      head.rotation.y += 0.34 * Math.sin(τ * 21) * w;
+      head.rotation.z += 0.04 * Math.sin(τ * 21 + 1) * w;
+    }
+    if (act.name === "shrug") {                                  // "...costs way more"
+      const w = env(τ, dur, 0.25, 0.3);
+      setArm(R, new THREE.Vector3(0.95, 0.45, 0.45).normalize(), w);
+      setArm(Lf, new THREE.Vector3(-0.95, 0.45, 0.45).normalize(), w);
+      head.rotation.z += 0.14 * w; head.rotation.x -= 0.05 * w;
+      bodyG.position.y += 0.04 * w;
+      brows.forEach(b => { b.position.y += 0.04 * w; });
+    }
+    if (act.name === "proud") {                                  // chin up, eyes smiling
+      const w = env(τ, dur, 0.25, 0.35);
+      head.rotation.x -= 0.2 * w;
+      happyEyes(0.7 * w);
+      bodyG.scale.y *= 1 + 0.035 * w;
+      setArm(R, new THREE.Vector3(0.55, 0.8, 0.45).normalize(), 0.9 * w);
+    }
+    if (act.name === "laugh") {                                  // bouncy giggle
+      const w = env(τ, dur, 0.12, 0.4);
+      bodyG.position.y += 0.06 * Math.abs(Math.sin(τ * 13)) * w;
+      head.rotation.x -= 0.16 * w; head.rotation.z += 0.05 * Math.sin(τ * 6.5) * w;
+      happyEyes(0.95 * w);
+    }
+    if (act.name === "point") {                                  // at the food: toward the frame centre
+      const w = env(τ, dur, 0.25, 0.35);
+      const toRight = cue.x <= 0.5, a = toRight ? R : Lf, sx = toRight ? 1 : -1;
+      setArm(a, new THREE.Vector3(0.9 * sx, 0.35, 0.55).normalize(), w);
+      head.rotation.y += 0.25 * sx * w;
     }
 
     if (act.name === "pan") {
@@ -1665,16 +1729,19 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   });
   const gainIn = document.getElementById("gain"), gateIn = document.getElementById("gate");
 
-  /* Ziggy voiceover: plays ziggy.mp3 directly (not through Web Audio, which Chrome
+  /* The voiceover: plays the video folder's voice mp3 directly (not through Web Audio, which Chrome
      silences for file:// media) and drives the mouth from a loudness track baked
      from the same file, looked up at the audio's current time so they stay in sync. */
-  const ZG = { el: new Audio("ziggy.mp3"), env: window.ZIGGY_LIPSYNC || null };
+  const CFG = window.CHUB_VIDEO || {}, VOICE = CFG.voiceName || "voice";
+  const ZG = { el: new Audio(window.CHUB_DIR + (CFG.voice || "voice.mp3")), env: window.CHUB_LIPSYNC || null };
   ZG.el.preload = "auto";
   const zBtn = document.getElementById("ziggy");
+  zBtn.textContent = "Speak " + VOICE;
+  let RT = null;                     // offline render time (s); null = follow the audio element
   function zSample(key) {
     const d = ZG.env && ZG.env[key];
-    if (!d || ZG.el.paused) return null;
-    const f = ZG.el.currentTime * ZG.env.fps, i = Math.floor(f);
+    if (!d || (RT == null && ZG.el.paused)) return null;
+    const f = (RT != null ? RT : ZG.el.currentTime) * ZG.env.fps, i = Math.floor(f);
     if (i < 0 || i >= d.length - 1) return null;
     return (d[i] + (d[i + 1] - d[i]) * (f - i)) / 99;
   }
@@ -1686,23 +1753,25 @@ body.bg-green .hint { color: #222; text-shadow: none; }
     return { open, wide: zSample("wide"), round: zSample("round"), teeth: zSample("teeth"), tongue: zSample("tongue") };
   }
   zBtn.addEventListener("click", () => {
-    if (!ZG.env) { showToast("ziggy-lipsync.js is missing next to this page", 2500); return; }
-    if (ZG.el.paused) { if (ZG.el.ended) ZG.el.currentTime = 0; ZG.el.play().catch(e => showToast("Couldn't play ziggy.mp3: " + e.message, 2500)); }
+    if (!ZG.env) { showToast("lipsync.js is missing in " + window.CHUB_DIR, 2500); return; }
+    if (ZG.el.paused) { if (ZG.el.ended) ZG.el.currentTime = 0; ZG.el.play().catch(e => showToast("Couldn't play " + window.CHUB_DIR + (CFG.voice || "voice.mp3") + ": " + e.message, 2500)); }
     else ZG.el.pause();
   });
   ZG.el.addEventListener("play", () => {
-    zBtn.textContent = "Pause Ziggy"; zBtn.setAttribute("aria-pressed", "true");
+    zBtn.textContent = "Pause " + VOICE; zBtn.setAttribute("aria-pressed", "true");
     vid.currentTime = ZG.el.currentTime; vid.play().catch(() => {});
   });
-  ZG.el.addEventListener("pause", () => { zBtn.textContent = "Speak Ziggy"; zBtn.setAttribute("aria-pressed", "false"); vid.pause(); });
+  ZG.el.addEventListener("pause", () => { zBtn.textContent = "Speak " + VOICE; zBtn.setAttribute("aria-pressed", "false"); vid.pause(); });
   ZG.el.addEventListener("ended", () => { ZG.el.currentTime = 0; if (rec) rec.stop(); });
 
   /* the TikTok video behind him plays in lockstep with Ziggy (muted, preview only) */
   const vid = document.getElementById("bgvid");
+  const BG_VIDEO = (window.CHUB_LOCAL || {}).background;
+  if (BG_VIDEO) vid.src = BG_VIDEO;
   const scrub = document.getElementById("scrub"), tlabel = document.getElementById("tlabel");
   const fmt = t => Math.floor(t / 60) + ":" + (t % 60).toFixed(1).padStart(4, "0");
   vid.addEventListener("loadedmetadata", () => { scrub.max = vid.duration.toFixed(2); });
-  vid.addEventListener("error", () => showToast("Couldn't load the background video from C:\\Users\\Bill\\Videos", 3500));
+  vid.addEventListener("error", () => showToast("Couldn't load the background video: " + (BG_VIDEO || "(set background in this video's local.js)"), 3500));
   ZG.el.addEventListener("timeupdate", () => {
     const t = ZG.el.currentTime;
     if (!ZG.el.paused && Math.abs(vid.currentTime - t) > 0.12) vid.currentTime = t;
@@ -1758,6 +1827,10 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   const clock = new THREE.Clock();
   let talkAvg = 0, nod = 0, nodV = 0, lastLvl = 0;
   const blink = { at: 1.2, t: -1, dbl: false };
+  const live = { tilt: 0, tiltTo: 0, tiltAt: 0.5, dart: new THREE.Vector2(), dartTo: new THREE.Vector2(), dartAt: 0.8,
+                 earAt: 2.2, earT: -1, earSide: 0, prevLvl: 0, gest: 0, gestV: 0, gestLast: -1, gestArm: 0 };
+  const BODY_Y0 = bodyG.position.y;
+  eyes.forEach(e => { e.userData.p0 = e.position.clone(); });
   function pose(t, dt) {
     const lvl = readLevel(dt);
     talkAvg += (lvl - talkAvg) * (1 - Math.exp(-dt * 1.5));     // "is he in a sentence" (slow)
@@ -1789,7 +1862,42 @@ body.bg-green .hint { color: #222; text-shadow: none; }
     head.rotation.z = Math.sin(t * 0.7) * 0.04 + Math.sin(t * 1.7) * 0.03 * talkAvg;
     head.rotation.y = Math.sin(t * 0.45) * 0.05 * talkAvg;
 
+    // ---- liveliness: bounce while talking, head tilts, eye darts, ear twitches, paw beats ----
+    const rnd = (a, b) => a + Math.random() * (b - a);
+    if (t >= live.tiltAt) { live.tiltTo = rnd(-1, 1); live.tiltAt = t + rnd(1.4, 3.4); }
+    live.tilt += (live.tiltTo - live.tilt) * (1 - Math.exp(-dt * 3));
+    head.rotation.z += 0.075 * live.tilt;
+    head.rotation.y += 0.05 * live.tilt * talkAvg;
+    bodyG.position.y = BODY_Y0 + 0.03 * Math.abs(Math.sin(t * 4.6)) * talkAvg;   // a little bob in his sentences
+    bodyG.position.x = 0.04 * Math.sin(t * 0.7) * (0.4 + talkAvg);                // weight shifting side to side
+    if (t >= live.dartAt) { live.dartTo.set(rnd(-1, 1), rnd(-0.6, 0.6)); live.dartAt = t + rnd(0.7, 2.6); }
+    live.dart.lerp(live.dartTo, 1 - Math.exp(-dt * 18));                        // quick saccades
+    if (live.earT < 0 && t >= live.earAt) { live.earT = 0; live.earSide = Math.random() < 0.5 ? 0 : 1; }
+    ears.forEach(e => { e.rotation.z = e.userData.z0; });
+    if (live.earT >= 0) {
+      live.earT += dt;
+      const c = live.earT, flick = c < 0.08 ? c / 0.08 : 1 - smo((c - 0.08) / 0.22);
+      const e = ears[live.earSide]; e.rotation.z += -e.userData.side * 0.28 * flick;
+      if (c > 0.3) { live.earT = -1; live.earAt = t + rnd(2.5, 7); }
+    }
+    const jump = lvl - live.prevLvl; live.prevLvl = lvl;
+    if (jump > 0.22 && t - live.gestLast > 0.35) { live.gestV += 5 * jump; live.gestLast = t; live.gestArm = 1 - live.gestArm; }
+    live.gestV += (-live.gest * 60 - live.gestV * 9) * dt; live.gest += live.gestV * dt;
+
+    // ---- glance at the dish (cue sheet): turn the head toward the spot, eyes lead a little ----
+    const lk = cue.look;
+    const ldx = THREE.MathUtils.clamp((cue.lookX - cue.faceX) * 1.8, -1, 1);
+    const ldy = THREE.MathUtils.clamp((cue.lookY - cue.faceY) * 1.8, -1, 1);
+    head.rotation.y += 0.45 * ldx * lk;
+    head.rotation.x += 0.3 * ldy * lk;
+    eyes.forEach(e => {
+      e.position.copy(e.userData.p0);
+      e.position.x += 0.018 * live.dart.x * (1 - lk) + 0.04 * ldx * lk;
+      e.position.y += 0.012 * live.dart.y * (1 - lk) - 0.03 * ldy * lk;
+    });
+
     // brows lift a hair when he's loud
+    brows.forEach(b => { b.rotation.z = b.userData.rz0; });
     brows[0].position.y = brows[0].userData.y0 + 0.03 * lvl;
     brows[1].position.y = brows[1].userData.y0 + 0.03 * lvl;
 
@@ -1802,6 +1910,9 @@ body.bg-green .hint { color: #222; text-shadow: none; }
       } else {
         d.add(new THREE.Vector3(0, 0.08 * talkAvg * Math.sin(t * 1.6), 0.1 * talkAvg));
       }
+      // a beat on stressed words, alternating paws
+      const gb = live.gest * ((a.side > 0) === (live.gestArm === 1) ? 1 : 0.35);
+      d.add(new THREE.Vector3(0.2 * a.side * gb, 0.55 * gb, 0.35 * gb));
       a.dir = d.normalize();
       a.pivot.quaternion.setFromUnitVectors(DOWN, a.dir);
     });
@@ -1820,7 +1931,7 @@ body.bg-green .hint { color: #222; text-shadow: none; }
         else { blink.dbl = false; blink.at = t + 2 + Math.random() * 3.5; }
       }
     }
-    eyes.forEach(e => { e.scale.y = Math.max(0.05, b); });
+    eyes.forEach(e => { e.scale.y = Math.max(0.05, b); e.scale.x = 1; });
     runAct(t, dt);
     bodyG.updateMatrixWorld(true);
     blendHullMat.uniforms.uBodyInv.value.copy(bodyG.matrixWorld).invert();
@@ -1835,7 +1946,7 @@ body.bg-green .hint { color: #222; text-shadow: none; }
     bodyMat.uniforms.uHem.value = root.position.y + bodyG.position.y + HEM_Y * bodyG.scale.y;
   }
   const tmp = new THREE.Vector3();
-  brows.forEach(b => { b.userData.y0 = b.position.y; });
+  brows.forEach(b => { b.userData.y0 = b.position.y; b.userData.rz0 = b.rotation.z; });
 
   /* ---------- camera ---------- */
   const TARGET = new THREE.Vector3(0, 1.85, 0);
@@ -1861,6 +1972,54 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   controls.minDistance = 2;
   let userMoved = false;
   controls.addEventListener("start", () => { userMoved = true; });
+
+  /* ---------- cue sheet (the video's cues.js): where he is, glances and actions, on Ziggy's time ----------
+     Framed chest-up: world height Y_CUT (his belly) sits on the frame's bottom edge. He pops up
+     from below at a show's `in` and ducks back under by its `out`. Works while scrubbing too. */
+  const CUES = window.CHUB_CUES || null;
+  const cueBtn = document.getElementById("cuesToggle");
+  let cuesOn = !!CUES;
+  cueBtn.setAttribute("aria-pressed", String(cuesOn));
+  cueBtn.addEventListener("click", () => {
+    cuesOn = !cuesOn; cueBtn.setAttribute("aria-pressed", String(cuesOn));
+    if (!cuesOn) { userMoved = false; homeCam(); }
+  });
+  const SIDE_X = { L: 0.25, R: 0.75, C: 0.5 };
+  const Y_CUT = 0.9, TOP = 4.6, FACE = 2.75;          // world heights: belly line, top of the hat, eyes
+  const cue = { k: 0, size: 0.6, x: 0.5, look: 0, lookX: 0.5, lookY: 0.45, faceX: 0.5, faceY: 0.7, lastT: -1 };
+  const popUp = x => { x = Math.min(1, Math.max(0, x)); const c = 1.5; return 1 + (c + 1) * Math.pow(x - 1, 3) + c * Math.pow(x - 1, 2); };
+  function frameCat(size, x, yCenter) {
+    const halfH = 2.25 / size, vf = THREE.MathUtils.degToRad(camera.fov) / 2;
+    controls.target.copy(TARGET);
+    camera.position.copy(TARGET).addScaledVector(new THREE.Vector3(0.0, 0.08, 1).normalize(), halfH / Math.tan(vf));
+    camera.setViewOffset(FW, FH, (0.5 - x) * FW, (0.5 - yCenter) * FH, FW, FH);
+  }
+  function cueFrame(dt) {
+    if (!cuesOn || !CUES) { cue.look = 0; return; }
+    const T = RT != null ? RT : (ZG.el.currentTime || 0), playing = RT != null || !ZG.el.paused;
+    let s = null;
+    for (const sh of CUES.shows) if (T >= sh.in && T <= sh.out) { s = sh; break; }
+    let k = 0;
+    if (s) {
+      k = Math.min(popUp((T - s.in) / 0.42), 1 - smo((T - (s.out - 0.3)) / 0.3));
+      cue.size = s.size; cue.x = SIDE_X[s.side] != null ? SIDE_X[s.side] : 0.5;
+    }
+    cue.k = k;
+    const unit = cue.size / 4.5;                               // frame heights per world unit
+    const yUp = 1 - (TARGET.y - Y_CUT) * unit;                // his centre when he's up
+    const yDown = yUp + (TOP - Y_CUT) * unit + 0.03;          // all of him below the bottom edge
+    frameCat(cue.size, cue.x, yDown + (yUp - yDown) * k);
+    cue.faceX = cue.x; cue.faceY = yUp - (FACE - TARGET.y) * unit;
+    let lw = 0;
+    for (const L of CUES.looks) if (T >= L.t && T <= L.t + L.dur) {
+      lw = smo((T - L.t) / 0.25) * smo((L.t + L.dur - T) / 0.25); cue.lookX = L.x; cue.lookY = L.y; break;
+    }
+    cue.look += (lw - cue.look) * (1 - Math.exp(-dt * 12));
+    // actions fire as playback crosses their time (not while scrubbing)
+    if (playing && cue.lastT >= 0 && T > cue.lastT && T - cue.lastT < 0.5)
+      for (const A of CUES.acts) if (A.t > cue.lastT && A.t <= T) startAct(A.act, A);
+    cue.lastT = T;
+  }
   function resize() {
     // render at the real frame size; only the on-screen preview is scaled to fit the window
     const panelH = (document.querySelector(".panel") || {}).offsetHeight || 120;
@@ -1922,7 +2081,7 @@ body.bg-green .hint { color: #222; text-shadow: none; }
     recBtn.setAttribute("aria-pressed", "true");
     recBtn.textContent = "Stop";
     if (A.el.src) { A.el.currentTime = 0; A.el.play(); }
-    else if (ZG.env) { ZG.el.currentTime = 0; ZG.el.play(); }    // video only: line ziggy.mp3 up at frame 0 in the editor
+    else if (ZG.env) { ZG.el.currentTime = 0; ZG.el.play(); }    // video only: line the voice mp3 up at frame 0 in the editor
     showToast(A.el.src || ZG.env ? "Recording — stops when the audio ends" : "Recording — press Stop when done", 2200);
   });
 
@@ -1933,11 +2092,17 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   });
 
   /* ---------- loop ---------- */
+  let rendering = false;              // true while renderFrames() drives the frames
   function loop() {
     requestAnimationFrame(loop);
+    if (rendering) return;
     const dt = Math.min(clock.getDelta(), 0.05);
-    pose(clock.elapsedTime, dt);
-    controls.update();
+    frame(dt, clock.elapsedTime);
+  }
+  function frame(dt, now) {
+    cueFrame(dt);
+    pose(now, dt);
+    if (!cuesOn) controls.update();
     // depth prepass for the screen-space rim light: him only, no outline shells or floor shadow
     const sz = renderer.getDrawingBufferSize(new THREE.Vector2());
     if (depthRT.width !== sz.x || depthRT.height !== sz.y) depthRT.setSize(sz.x, sz.y);
@@ -1967,7 +2132,44 @@ body.bg-green .hint { color: #222; text-shadow: none; }
   SHARED.uDepth.value = depthRT.depthTexture;
   const depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false });
   loop();
-  window.__chef = { A, mouth, head, camera, controls };
+  // debug: render an exact moment (paused) — e.g. __chef.sim(27.6, "kiss", 0.6) shows 0.6 s into a kiss at 27.6 s
+  /* offline render: steps the whole cue sheet at exact frame times and POSTs each transparent
+     1080x1920 PNG to a local collector, e.g. __chef.renderFrames("http://127.0.0.1:8733/frame/", 24, 1262) */
+  async function renderFrames(url, fps, n, onProgress) {
+    rendering = true; ZG.el.pause(); cue.lastT = -1; endAct();
+    try {
+      for (let i = 0; i < n; i++) {
+        RT = i / fps;
+        frame(1 / fps, 2000 + i / fps);
+        const blob = await new Promise(res => canvas.toBlob(res, "image/png"));
+        const r = await fetch(url + String(i).padStart(5, "0"), { method: "POST", body: blob });
+        if (!r.ok) throw new Error("collector said " + r.status + " at frame " + i);
+        if (onProgress && i % 24 === 0) onProgress(i, n);
+      }
+    } finally { RT = null; rendering = false; }
+    return n;
+  }
+  let simNow = 1000;
+  const sim = (T, actName, secs) => {
+    ZG.el.pause(); ZG.el.currentTime = T;
+    if (actName) startAct(actName);
+    const n = Math.max(1, Math.round((secs || 0.5) * 30));
+    for (let i = 0; i < n; i++) frame(1 / 30, simNow += 1 / 30);
+  };
+  window.__chef = { A, mouth, head, camera, controls, cue, ZG, sim, renderFrames };
+  const renderBtn = document.getElementById("renderBtn");
+  renderBtn.addEventListener("click", async () => {
+    if (rendering) return;
+    const fps = CFG.fps || 24, n = CFG.frames || Math.ceil((ZG.el.duration || 0) * fps);
+    if (!n) { showToast("Set frames in video.js (or let the voice load first)", 3000); return; }
+    renderBtn.disabled = true;
+    try {
+      await renderFrames("http://127.0.0.1:8733/frame/", fps, n, (i, tot) => showToast("Rendering frame " + i + " / " + tot));
+      showToast("Rendered " + n + " frames. Next: python tools/encode_overlay.py", 6000);
+    } catch (e) {
+      showToast("Render failed (is tools/frame_collector.py running?): " + e.message, 6000);
+    } finally { renderBtn.disabled = false; }
+  });
   }
 })();
 </script>

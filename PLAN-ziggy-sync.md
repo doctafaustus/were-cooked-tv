@@ -4,7 +4,7 @@ Status: **planned, not started**. Two questions are open (see the end).
 
 Inputs:
 - `ziggy.mp3`: the voiceover, 52.1 s.
-- The video: `C:\Users\Bill\Videos\Crispy Cranberry Chicken TikTok.mp4`, 1080×1920, 24 fps, 57.6 s.
+- The video: `Crispy Cranberry Chicken TikTok.mp4` (in the Videos folder), 1080×1920, 24 fps, 57.6 s.
 - The shot list: the DaVinci Resolve project "Crispy Cranberry Chicken - TikTok", Timeline 1, 44 shots on V1.
 - The word timings: faster-whisper `small.en` on `ziggy.mp3`.
 
